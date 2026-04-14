@@ -17,6 +17,8 @@ const state = {
   charts:      {},
   cardFilter:  null,   // quick-filter set by metric card clicks
   activeCard:  null,   // id of the currently active metric card
+  dateFrom:    null,
+  dateTo:      null,
 };
 
 // Metric card → filter function mapping
@@ -171,6 +173,8 @@ function applyFilters() {
   const status  = $('statusFilter').value;
   const prio    = $('priorityFilter').value;
   const assinee = $('assigneeFilter').value;
+  const msFrom  = state.dateFrom ? new Date(state.dateFrom + 'T00:00:00').getTime() : null;
+  const msTo    = state.dateTo   ? new Date(state.dateTo   + 'T23:59:59').getTime() : null;
 
   state.filtered = state.tasks.filter(t => {
     // Quick-filter from metric card click
@@ -181,6 +185,8 @@ function applyFilters() {
     if (assinee && assinee !== '__unassigned__') {
       if (!t.assignees.some(a => a.name === assinee)) return false;
     }
+    if (msFrom && (!t.created || t.created < msFrom)) return false;
+    if (msTo   && (!t.created || t.created > msTo))   return false;
     if (q) {
       const haystack = [t.name, t.requester, t.status, t.priority,
         ...t.assignees.map(a => a.name), ...t.tags].join(' ').toLowerCase();
@@ -188,6 +194,22 @@ function applyFilters() {
     }
     return true;
   });
+
+  // Update date filter badge
+  const badge    = $('dateResultBadge');
+  const clearBtn = $('btnClearDates');
+  const card     = $('dateFilterCard');
+  if (msFrom || msTo) {
+    const n = state.filtered.length;
+    badge.textContent = `${n} ticket${n !== 1 ? 's' : ''} found`;
+    badge.hidden  = false;
+    clearBtn.hidden = false;
+    card.classList.add('date-active');
+  } else {
+    badge.hidden  = true;
+    clearBtn.hidden = true;
+    card.classList.remove('date-active');
+  }
 
   state.page = 0;
   sortTasks();
@@ -579,11 +601,34 @@ function init() {
     $('statusFilter').value = '';
     $('priorityFilter').value = '';
     $('assigneeFilter').value = '';
+    $('dateFrom').value = '';
+    $('dateTo').value   = '';
     state.cardFilter = null;
     state.activeCard = null;
+    state.dateFrom   = null;
+    state.dateTo     = null;
     Object.keys(CARD_FILTERS).forEach(id => {
       $$(`.metric-card#${id}`)?.classList.remove('card-active');
     });
+    state.page = 0;
+    applyFilters();
+  });
+
+  $('dateFrom').addEventListener('change', function () {
+    state.dateFrom = this.value || null;
+    state.page = 0;
+    applyFilters();
+  });
+  $('dateTo').addEventListener('change', function () {
+    state.dateTo = this.value || null;
+    state.page = 0;
+    applyFilters();
+  });
+  $('btnClearDates').addEventListener('click', () => {
+    $('dateFrom').value = '';
+    $('dateTo').value   = '';
+    state.dateFrom = null;
+    state.dateTo   = null;
     state.page = 0;
     applyFilters();
   });
