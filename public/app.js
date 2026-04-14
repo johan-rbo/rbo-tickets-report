@@ -214,6 +214,7 @@ function applyFilters() {
   state.page = 0;
   sortTasks();
   renderTable();
+  renderCharts();
 }
 
 function setActiveCard(cardId) {
@@ -313,7 +314,7 @@ function destroyChart(key) {
 function renderStatusChart() {
   destroyChart('status');
   const counts = {};
-  state.tasks.forEach(t => { counts[t.status] = (counts[t.status] || 0) + 1; });
+  state.filtered.forEach(t => { counts[t.status] = (counts[t.status] || 0) + 1; });
   const labels = Object.keys(counts);
   const data   = labels.map(k => counts[k]);
   const colors = labels.map(k => {
@@ -341,7 +342,7 @@ function renderPriorityChart() {
   const order  = ['urgent', 'high', 'normal', 'low', 'none'];
   const counts = {};
   order.forEach(p => { counts[p] = 0; });
-  state.tasks.forEach(t => {
+  state.filtered.forEach(t => {
     const p = t.priority?.toLowerCase() || 'none';
     if (p in counts) counts[p]++;
   });
@@ -368,24 +369,41 @@ function renderPriorityChart() {
 
 function renderTimelineChart() {
   destroyChart('timeline');
-  // Build day buckets for the last 30 days
   const DAY = 86_400_000;
   const now  = Date.now();
-  const days = 30;
+
+  // Adapt window to active date filter, else default to last 30 days
+  const msFrom = state.dateFrom ? new Date(state.dateFrom + 'T00:00:00').getTime() : null;
+  const msTo   = state.dateTo   ? new Date(state.dateTo   + 'T23:59:59').getTime() : null;
+  const winStart = msFrom || (now - 30 * DAY);
+  const winEnd   = msTo   || now;
+  const days = Math.max(1, Math.ceil((winEnd - winStart) / DAY) + 1);
+
+  // Update chart title dynamically
+  const titleEl = $('timelineTitle');
+  if (titleEl) {
+    if (msFrom || msTo) {
+      const fmt = ts => new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      titleEl.textContent = `Tickets Activity — ${fmt(winStart)} to ${fmt(winEnd)}`;
+    } else {
+      titleEl.textContent = 'Tickets Activity — Last 30 Days';
+    }
+  }
+
   const buckets = {};
-  for (let i = days - 1; i >= 0; i--) {
-    const d = new Date(now - i * DAY);
+  for (let i = 0; i < days; i++) {
+    const d = new Date(winStart + i * DAY);
     const key = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
     buckets[key] = { created: 0, closed: 0 };
   }
 
-  state.tasks.forEach(t => {
-    if (t.created && t.created > now - days * DAY) {
+  state.filtered.forEach(t => {
+    if (t.created && t.created >= winStart && t.created <= winEnd) {
       const d = new Date(t.created);
       const k = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
       if (k in buckets) buckets[k].created++;
     }
-    if (t.closed && t.closed > now - days * DAY) {
+    if (t.closed && t.closed >= winStart && t.closed <= winEnd) {
       const d = new Date(t.closed);
       const k = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
       if (k in buckets) buckets[k].closed++;
