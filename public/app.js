@@ -6,19 +6,17 @@
 
 // ─── State ────────────────────────────────────────────────
 const state = {
-  tasks:       [],
-  filtered:    [],
-  sortCol:     'created',
-  sortDir:     'desc',
-  page:        0,
-  pageSize:    25,
-  autoRefresh: true,
-  refreshTimer: null,
-  charts:      {},
-  cardFilter:  null,   // quick-filter set by metric card clicks
-  activeCard:  null,   // id of the currently active metric card
-  dateFrom:    null,
-  dateTo:      null,
+  tasks:      [],
+  filtered:   [],
+  sortCol:    'created',
+  sortDir:    'desc',
+  page:       0,
+  pageSize:   25,
+  charts:     {},
+  cardFilter: null,   // quick-filter set by metric card clicks
+  activeCard: null,   // id of the currently active metric card
+  dateFrom:   null,
+  dateTo:     null,
 };
 
 // Metric card → filter function mapping
@@ -121,7 +119,7 @@ function assigneeAvatars(assignees) {
   return `<div class="assignees">${avatarsHtml}${extra}</div>`;
 }
 
-// ─── Fetch data ────────────────────────────────────────────
+// ─── Fetch data (manual / initial load) ───────────────────
 async function fetchTickets(force = false) {
   setLoading(true);
   setError(null);
@@ -131,18 +129,46 @@ async function fetchTickets(force = false) {
     if (!res.ok) throw new Error(`Server error: ${res.status}`);
     const data = await res.json();
     if (!data.success) throw new Error(data.error || 'Unknown error');
-    state.tasks = data.tasks || [];
-    state.page  = 0;
-    updateLastUpdated(data.fetchedAt || Date.now());
-    applyFilters();
-    renderMetrics();
-    renderCharts();
-    populateFilters();
+    ingestData(data);
   } catch (err) {
     setError(err.message);
   } finally {
     setLoading(false);
   }
+}
+
+function ingestData(data) {
+  state.tasks = data.tasks || [];
+  state.page  = 0;
+  updateLastUpdated(data.fetchedAt || Date.now());
+  applyFilters();
+  renderMetrics();
+  populateFilters();
+}
+
+// ─── Real-time stream ──────────────────────────────────────
+function connectStream() {
+  const indicator = $('streamIndicator');
+  const es = new EventSource('/api/stream');
+
+  es.onopen = () => {
+    indicator?.classList.remove('error');
+    indicator?.classList.add('connected');
+  };
+
+  es.onmessage = e => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.success) ingestData(data);
+    } catch {}
+  };
+
+  es.onerror = () => {
+    indicator?.classList.remove('connected');
+    indicator?.classList.add('error');
+    es.close();
+    setTimeout(connectStream, 5_000);
+  };
 }
 
 // ─── Loading / error ──────────────────────────────────────
@@ -305,6 +331,8 @@ function renderCharts() {
   renderStatusChart();
   renderPriorityChart();
   renderTimelineChart();
+  renderTagChart();
+  renderRequesterChart();
 }
 
 function destroyChart(key) {
@@ -458,6 +486,122 @@ function renderTimelineChart() {
   });
 }
 
+function renderTagChart() {
+  destroyChart('tags');
+  const counts = {};
+  state.filtered.forEach(t => {
+    (t.tags || []).forEach(tag => { counts[tag] = (counts[tag] || 0) + 1; });
+  });
+
+  const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 10);
+
+  const insight = $('trainingInsight');
+  if (insight) {
+    if (sorted.length >= 2) {
+      insight.textContent = `Training focus: ${sorted.slice(0, 2).map(([k]) => k).join(', ')}`;
+      insight.hidden = false;
+    } else {
+      insight.hidden = true;
+    }
+  }
+
+  if (!sorted.length) return;
+  const labels = sorted.map(([k]) => k);
+  const data   = sorted.map(([, v]) => v);
+
+  state.charts.tags = new Chart($('tagChart'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Tickets', data,
+        backgroundColor: 'rgba(165,160,255,0.25)',
+        borderColor: '#a5a0ff', borderWidth: 2, borderRadius: 6
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, indexAxis: 'y',
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: ctx => ` ${ctx.parsed.x} ticket${ctx.parsed.x !== 1 ? 's' : ''}` } }
+      },
+      scales: {
+        x: { grid: { color: '#21262d' }, ticks: { color: '#8b949e', font: { size: 11 }, stepSize: 1, precision: 0 }, beginAtZero: true },
+        y: { grid: { display: false }, ticks: { color: '#8b949e', font: { size: 11 } } }
+      }
+    }
+  });
+}
+
+function renderRequesterChart() {
+  destroyChart('requesters');
+  const counts = {};
+  state.filtered.forEach(t => {
+    if (t.requester && t.requester !== 'Unknown') {
+      counts[t.requester] = (counts[t.requester] || 0) + 1;
+    }
+  });
+
+  const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  if (!sorted.length) return;
+
+  const labels = sorted.map(([k]) => k);
+  const data   = sorted.map(([, v]) => v);
+  const colors = data.map((v, i) => {
+    if (i === 0 && v > (data[1] || 0) * 2) return '#f0883e'; // standout requester
+    return '#58a6ff';
+  });
+
+  state.charts.requesters = new Chart($('requesterChart'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Tickets', data,
+        backgroundColor: colors.map(c => c + '40'),
+        borderColor: colors, borderWidth: 2, borderRadius: 6
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, indexAxis: 'y',
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: ctx => ` ${ctx.parsed.x} ticket${ctx.parsed.x !== 1 ? 's' : ''}` } }
+      },
+      scales: {
+        x: { grid: { color: '#21262d' }, ticks: { color: '#8b949e', font: { size: 11 }, stepSize: 1, precision: 0 }, beginAtZero: true },
+        y: { grid: { display: false }, ticks: { color: '#8b949e', font: { size: 11 } } }
+      }
+    }
+  });
+}
+
+// ─── Export CSV ───────────────────────────────────────────
+function exportCSV() {
+  const headers = ['Status', 'Priority', 'Request', 'Requester', 'Assignees', 'Created', 'Due', 'Tags', 'Source', 'URL'];
+  const rows = state.filtered.map(t => [
+    t.status,
+    t.priority,
+    `"${(t.name      || '').replace(/"/g, '""')}"`,
+    `"${(t.requester || '').replace(/"/g, '""')}"`,
+    `"${(t.assignees || []).map(a => a.name).join(', ').replace(/"/g, '""')}"`,
+    t.created ? new Date(t.created).toLocaleDateString('en-US') : '',
+    t.due     ? new Date(t.due).toLocaleDateString('en-US')     : '',
+    `"${(t.tags || []).join(', ')}"`,
+    t.source || '',
+    t.url    || ''
+  ]);
+
+  const csv  = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `rbo-tickets-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ─── Render table ─────────────────────────────────────────
 function renderTable() {
   const { filtered, page, pageSize } = state;
@@ -572,17 +716,6 @@ function closeModal() {
   if (b) b.classList.add('hidden');
 }
 
-// ─── Auto-refresh ─────────────────────────────────────────
-function scheduleRefresh() {
-  clearTimeout(state.refreshTimer);
-  if (state.autoRefresh) {
-    state.refreshTimer = setTimeout(() => {
-      fetchTickets();
-      scheduleRefresh();
-    }, 2 * 60 * 1000); // 2 minutes
-  }
-}
-
 // ─── Utilities ────────────────────────────────────────────
 function escapeHtml(str) {
   if (!str) return '';
@@ -603,11 +736,6 @@ document.addEventListener('keydown', e => {
 function init() {
   // Wire up controls
   $('btnRefresh').addEventListener('click', () => fetchTickets(true));
-
-  $('autoRefresh').addEventListener('change', function() {
-    state.autoRefresh = this.checked;
-    scheduleRefresh();
-  });
 
   $('searchInput').addEventListener('input', () => { state.page = 0; applyFilters(); });
   $('statusFilter').addEventListener('change', () => { state.page = 0; applyFilters(); });
@@ -664,10 +792,12 @@ function init() {
     if ((state.page + 1) * state.pageSize < total) { state.page++; renderTable(); }
   });
 
+  $('btnExport').addEventListener('click', exportCSV);
+
   initSortHeaders();
 
-  // Initial load
-  fetchTickets().then(() => scheduleRefresh());
+  // Initial load + real-time stream
+  fetchTickets().then(() => connectStream());
 }
 
 // Set default sort header indicator

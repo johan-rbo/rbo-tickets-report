@@ -27,11 +27,7 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
         Refresh
       </button>
-      <label class="toggle-label" title="Auto-refresh every 2 minutes">
-        <input type="checkbox" id="autoRefresh" checked />
-        <span class="toggle-track"><span class="toggle-thumb"></span></span>
-        Auto-refresh
-      </label>
+      <span class="stream-indicator" id="streamIndicator" title="Live updates active"></span>
     </div>
   </header>
 
@@ -155,6 +151,23 @@
           <canvas id="timelineChart"></canvas>
         </div>
       </div>
+
+      <div class="chart-card chart-card--half">
+        <div class="chart-title-row">
+          <h3 class="chart-title">Ticket Categories</h3>
+          <span class="training-insight" id="trainingInsight"></span>
+        </div>
+        <div class="chart-wrap chart-wrap--bar">
+          <canvas id="tagChart"></canvas>
+        </div>
+      </div>
+
+      <div class="chart-card chart-card--half">
+        <h3 class="chart-title">Top Requesters</h3>
+        <div class="chart-wrap chart-wrap--bar">
+          <canvas id="requesterChart"></canvas>
+        </div>
+      </div>
     </section>
 
     <!-- ░░ TICKET TABLE ░░ -->
@@ -185,6 +198,10 @@
             <option value="__unassigned__">Unassigned</option>
           </select>
           <button class="btn-clear-filters" id="btnClearFilters">Clear</button>
+          <button class="btn-export" id="btnExport" title="Export visible tickets to CSV">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Export CSV
+          </button>
         </div>
       </div>
 
