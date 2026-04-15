@@ -799,6 +799,74 @@ body {
   border-radius: 4px;
 }
 .modal-close:hover { background: var(--surface-3); color: var(--text); }
+/* ─── PRINT / PDF ─────────────────────────────────────── */
+
+@media print {
+  /* Force light background so charts are visible on paper */
+  :root {
+    --bg: #ffffff;
+    --surface: #f6f8fa;
+    --surface-2: #eaeef2;
+    --surface-3: #d0d7de;
+    --border: #d0d7de;
+    --border-2: #eaeef2;
+    --text: #1f2328;
+    --text-2: #656d76;
+    --text-3: #9198a1;
+  }
+
+  /* Hide interactive / nav elements */
+  .header-actions,
+  .stream-indicator,
+  .btn-refresh,
+  .date-filter-controls .btn-clear-dates,
+  .date-result-badge,
+  .filters,
+  .btn-export,
+  .btn-export--pdf,
+  .pagination,
+  .loading-overlay,
+  .error-banner,
+  .modal-backdrop,
+  .btn-link          { display: none !important; }
+
+  /* Static header */
+  .header            { position: static; box-shadow: none; border-bottom: 2px solid var(--border); }
+  .main              { padding: 12px; max-width: 100%; gap: 16px; }
+
+  /* Date filter — keep labels only */
+  .date-filter-card  { border: 1px solid var(--border); padding: 8px 14px; }
+  .date-input        { border: none; background: transparent; color: var(--text); }
+
+  /* Metric cards — 3-per-row on print */
+  .metrics           { grid-template-columns: repeat(3, 1fr); }
+  .metric-card       { cursor: default; }
+  .metric-card:hover { transform: none; box-shadow: none; }
+
+  /* Charts — 2-per-row, avoid breaking across pages */
+  .charts            { grid-template-columns: 1fr 1fr; }
+  .chart-card        { break-inside: avoid; page-break-inside: avoid; }
+  .chart-card--wide,
+  .chart-card--half  { grid-column: span 1; }
+  .chart-wrap        { height: 180px !important; }
+
+  /* Table — full width, no scroll */
+  .tickets-section   { border: 1px solid var(--border); }
+  .tickets-header    { padding: 10px 14px; }
+  .table-wrap        { overflow: visible; }
+  .tickets-table td,
+  .tickets-table th  { font-size: 0.72rem; padding: 6px 10px; }
+  .request-cell      { max-width: 280px; }
+  .request-text      { -webkit-line-clamp: unset; overflow: visible; }
+
+  /* Page breaks */
+  .metrics           { break-inside: avoid; }
+  .charts            { break-before: auto; }
+  .tickets-section   { break-before: page; }
+
+  @page { margin: 1.5cm; size: A4 landscape; }
+}
+
 .modal-body {
   padding: 20px;
   overflow-y: auto;

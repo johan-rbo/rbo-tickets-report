@@ -141,9 +141,8 @@ function ingestData(data) {
   state.tasks = data.tasks || [];
   state.page  = 0;
   updateLastUpdated(data.fetchedAt || Date.now());
-  applyFilters();
-  renderMetrics();
   populateFilters();
+  applyFilters();   // calls renderMetrics + renderCharts internally
 }
 
 // ─── Real-time stream ──────────────────────────────────────
@@ -241,6 +240,7 @@ function applyFilters() {
   sortTasks();
   renderTable();
   renderCharts();
+  renderMetrics();
 }
 
 function setActiveCard(cardId) {
@@ -317,7 +317,7 @@ function sortTasks() {
 
 // ─── Render metrics ───────────────────────────────────────
 function renderMetrics() {
-  const t = state.tasks;
+  const t = state.filtered;   // always reflects active filters
   $('stat-total').textContent      = t.length;
   $('stat-open').textContent       = t.filter(x => x.status === 'to do').length;
   $('stat-inprogress').textContent = t.filter(x => ['in progress','next in line','backlog'].includes(x.status)).length;
@@ -576,6 +576,25 @@ function renderRequesterChart() {
   });
 }
 
+// ─── Export PDF (print) ───────────────────────────────────
+function exportPDF() {
+  window.print();
+}
+
+// Before printing: show all rows; after: restore pagination
+window.addEventListener('beforeprint', () => {
+  state._savedPageSize = state.pageSize;
+  state._savedPage     = state.page;
+  state.pageSize = Infinity;
+  state.page     = 0;
+  renderTable();
+});
+window.addEventListener('afterprint', () => {
+  state.pageSize = state._savedPageSize ?? 25;
+  state.page     = state._savedPage     ?? 0;
+  renderTable();
+});
+
 // ─── Export CSV ───────────────────────────────────────────
 function exportCSV() {
   const headers = ['Status', 'Priority', 'Request', 'Requester', 'Assignees', 'Created', 'Due', 'Tags', 'Source', 'URL'];
@@ -793,6 +812,7 @@ function init() {
   });
 
   $('btnExport').addEventListener('click', exportCSV);
+  $('btnExportPDF').addEventListener('click', exportPDF);
 
   initSortHeaders();
 
