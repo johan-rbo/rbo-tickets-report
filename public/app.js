@@ -47,6 +47,28 @@ const PRIORITY_META = {
   'none':   { color: '#6e7681', icon: '—',   label: 'None'   },
 };
 
+// Keyword map used to auto-classify tickets when ClickUp tags are absent
+const CATEGORY_KEYWORDS = [
+  { name: 'Virtual Machines',   kw: ['virtual machine', 'vm', 'vmware', 'hyper-v', 'virtualbox', 'vps'] },
+  { name: 'Google Workspace',   kw: ['google sheets', 'spreadsheet', 'google docs', 'google drive', 'google meet', 'gmail', 'google workspace', 'google'] },
+  { name: 'Access / Login',     kw: ['login', 'password', 'contraseña', 'credential', "can't log", 'cant log', 'no puedo entrar', 'ingresar', 'sign in', '2fa', 'mfa', 'acceso'] },
+  { name: 'Email',              kw: ['email', 'correo', 'outlook', 'inbox', 'spam'] },
+  { name: 'Printers',           kw: ['printer', 'printing', 'impresora', 'scanner', 'imprimir'] },
+  { name: 'Network / Internet', kw: ['network', 'internet', 'vpn', 'wifi', 'wi-fi', 'connection', 'conectar', 'red', 'dns', 'conexion'] },
+  { name: 'Software / Apps',    kw: ['install', 'software', 'application', 'update', 'upgrade', 'instalar', 'programa'] },
+  { name: 'Hardware',           kw: ['computer', 'laptop', 'keyboard', 'mouse', 'monitor', 'screen', 'hardware', 'computadora', 'teclado'] },
+  { name: 'Permissions',        kw: ['permission', 'permiso', 'permisos', 'role', 'authorization', 'rights', 'access request'] },
+  { name: 'Data / Reports',     kw: ['data', 'report', 'reporte', 'export', 'import', 'database', 'datos'] },
+];
+
+function categorizeTicket(task) {
+  const text = ((task.rawName || '') + ' ' + (task.name || '')).toLowerCase();
+  for (const cat of CATEGORY_KEYWORDS) {
+    if (cat.kw.some(kw => text.includes(kw))) return cat.name;
+  }
+  return 'Other';
+}
+
 // ─── DOM helpers ─────────────────────────────────────────
 const $  = id  => document.getElementById(id);
 const $$ = sel => document.querySelector(sel);
@@ -488,28 +510,59 @@ function renderTimelineChart() {
 
 function renderTagChart() {
   destroyChart('tags');
-  const counts = {};
-  state.filtered.forEach(t => {
-    (t.tags || []).forEach(tag => { counts[tag] = (counts[tag] || 0) + 1; });
-  });
 
-  const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 10);
+  const emptyEl  = $('tagChartEmpty');
+  const canvasEl = $('tagChart');
+  const insight  = $('trainingInsight');
+  const counts   = {};
 
-  const insight = $('trainingInsight');
+  // Use ClickUp tags when available; otherwise classify by keyword
+  const hasTags = state.filtered.some(t => t.tags && t.tags.length > 0);
+  if (hasTags) {
+    state.filtered.forEach(t => {
+      (t.tags || []).forEach(tag => { counts[tag] = (counts[tag] || 0) + 1; });
+    });
+  } else {
+    state.filtered.forEach(t => {
+      const cat = categorizeTicket(t);
+      counts[cat] = (counts[cat] || 0) + 1;
+    });
+  }
+
+  // Named categories sorted by count; "Other" always last
+  const named = Object.entries(counts)
+    .filter(([k]) => k !== 'Other')
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10);
+  if (counts['Other']) named.push(['Other', counts['Other']]);
+  const sorted = named;
+
+  // Empty state: nothing to show, or every ticket fell into "Other"
+  const allOther = sorted.length === 1 && sorted[0][0] === 'Other';
+  if (!sorted.length || allOther) {
+    if (insight)  { insight.hidden = true; }
+    if (emptyEl)  { emptyEl.hidden = false; }
+    if (canvasEl) { canvasEl.hidden = true; }
+    return;
+  }
+
+  if (emptyEl)  emptyEl.hidden = true;
+  if (canvasEl) canvasEl.hidden = false;
+
   if (insight) {
-    if (sorted.length >= 2) {
-      insight.textContent = `Training focus: ${sorted.slice(0, 2).map(([k]) => k).join(', ')}`;
+    const topTwo = sorted.filter(([k]) => k !== 'Other').slice(0, 2);
+    if (topTwo.length >= 2) {
+      insight.textContent = `Top: ${topTwo.map(([k]) => k).join(', ')}`;
       insight.hidden = false;
     } else {
       insight.hidden = true;
     }
   }
 
-  if (!sorted.length) return;
   const labels = sorted.map(([k]) => k);
   const data   = sorted.map(([, v]) => v);
 
-  state.charts.tags = new Chart($('tagChart'), {
+  state.charts.tags = new Chart(canvasEl, {
     type: 'bar',
     data: {
       labels,
@@ -576,47 +629,328 @@ function renderRequesterChart() {
   });
 }
 
-// ─── Export PDF (print) ───────────────────────────────────
-function exportPDF() {
-  window.print();
+// ─── Export helpers (shared by PDF + CSV) ─────────────────
+
+function _reportMeta() {
+  const t      = state.filtered;
+  const now    = new Date();
+  const msFrom = state.dateFrom ? new Date(state.dateFrom + 'T00:00:00').getTime() : null;
+  const msTo   = state.dateTo   ? new Date(state.dateTo   + 'T23:59:59').getTime() : null;
+  const fmtL   = ts => new Date(ts).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+  let period   = 'All Tickets';
+  if (msFrom && msTo) period = `${fmtL(msFrom)} – ${fmtL(msTo)}`;
+  else if (msFrom)    period = `From ${fmtL(msFrom)}`;
+  else if (msTo)      period = `Through ${fmtL(msTo)}`;
+
+  const total      = t.length;
+  const todo       = t.filter(x => x.status === 'to do').length;
+  const inProgress = t.filter(x => ['in progress','next in line','backlog'].includes(x.status)).length;
+  const review     = t.filter(x => x.status === 'awaiting review').length;
+  const completed  = t.filter(x => x.statusType === 'closed').length;
+  const unassigned = t.filter(x => !x.assignees?.length).length;
+  const resRate    = total ? Math.round(completed / total * 100) : 0;
+  const pct        = n   => total ? Math.round(n / total * 100) : 0;
+
+  const hasTags = t.some(x => x.tags && x.tags.length > 0);
+
+  const statusCounts = {};
+  t.forEach(x => { statusCounts[x.status] = (statusCounts[x.status] || 0) + 1; });
+  const statusRows = Object.entries(statusCounts).sort((a, b) => b[1] - a[1]);
+
+  const prioOrder  = ['urgent', 'high', 'normal', 'low', 'none'];
+  const prioCounts = {};
+  t.forEach(x => { prioCounts[x.priority || 'none'] = (prioCounts[x.priority || 'none'] || 0) + 1; });
+  const prioRows = prioOrder.filter(p => prioCounts[p]).map(p => [p, prioCounts[p]]);
+
+  const catCounts = {};
+  if (hasTags) {
+    t.forEach(x => (x.tags || []).forEach(tag => { catCounts[tag] = (catCounts[tag] || 0) + 1; }));
+  } else {
+    t.forEach(x => { const c = categorizeTicket(x); catCounts[c] = (catCounts[c] || 0) + 1; });
+  }
+  const catRows = Object.entries(catCounts).filter(([k]) => k !== 'Other').sort((a, b) => b[1] - a[1]).slice(0, 8);
+  if (catCounts['Other']) catRows.push(['Other', catCounts['Other']]);
+
+  const reqCounts = {};
+  t.forEach(x => { if (x.requester && x.requester !== 'Unknown') reqCounts[x.requester] = (reqCounts[x.requester] || 0) + 1; });
+  const reqRows = Object.entries(reqCounts).sort((a, b) => b[1] - a[1]).slice(0, 8);
+
+  return { t, now, period, total, todo, inProgress, review, completed, unassigned, resRate, pct,
+           hasTags, statusRows, prioRows, catRows, reqRows };
 }
 
-// Before printing: show all rows; after: restore pagination
-window.addEventListener('beforeprint', () => {
-  state._savedPageSize = state.pageSize;
-  state._savedPage     = state.page;
-  state.pageSize = Infinity;
-  state.page     = 0;
-  renderTable();
-});
-window.addEventListener('afterprint', () => {
-  state.pageSize = state._savedPageSize ?? 25;
-  state.page     = state._savedPage     ?? 0;
-  renderTable();
-});
+// ─── Export PDF ────────────────────────────────────────────
+function exportPDF() {
+  const { t, now, period, total, todo, inProgress, review, completed, unassigned, resRate, pct,
+          hasTags, statusRows, prioRows, catRows, reqRows } = _reportMeta();
+
+  const maxOf = rows => Math.max(...rows.map(([, n]) => n), 1);
+
+  // ── HTML helpers ──────────────────────────────────────────
+  const esc  = s => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const trunc = (s, n) => s.length > n ? s.slice(0, n) + '…' : s;
+
+  const statusPill = status => {
+    const s = (status || '').toLowerCase();
+    const cls = s === 'to do' ? 's-todo'
+      : ['in progress','next in line','backlog'].includes(s) ? 's-progress'
+      : s === 'awaiting review' ? 's-review'
+      : s === 'complete' ? 's-complete' : 's-default';
+    return `<span class="pill ${cls}">${esc(status || '—')}</span>`;
+  };
+
+  const prioPill = priority => {
+    const p = (priority || 'none').toLowerCase();
+    const label = PRIORITY_META[p]?.label || priority || '—';
+    const cls   = ['urgent','high','normal','low','none'].includes(p) ? `p-${p}` : 'p-none';
+    return `<span class="pill ${cls}">${esc(label)}</span>`;
+  };
+
+  const bdRows = (rows, maxVal, labelFn = k => k) => !rows.length
+    ? '<tr><td colspan="4" class="no-data">No data available</td></tr>'
+    : rows.map(([k, n]) => `
+      <tr>
+        <td class="bd-label">${esc(String(labelFn(k)))}</td>
+        <td class="bd-bar-cell"><div class="bd-bar-wrap"><div class="bd-bar" style="width:${Math.round(n / maxVal * 100)}%"></div></div></td>
+        <td class="bd-count">${n}</td>
+        <td class="bd-pct">${pct(n)}%</td>
+      </tr>`).join('');
+
+  const ticketRows = t.map((task, i) => `
+    <tr>
+      <td class="n">${i + 1}</td>
+      <td>${statusPill(task.status)}</td>
+      <td>${prioPill(task.priority)}</td>
+      <td class="req">${esc(trunc(task.name || '—', 90))}</td>
+      <td class="nowrap">${esc(task.requester || '—')}</td>
+      <td class="nowrap">${task.assignees?.length ? esc(task.assignees.map(a => a.name).join(', ')) : '<span class="muted">Unassigned</span>'}</td>
+      <td class="cat">${hasTags ? esc(task.tags?.[0] || '—') : esc(categorizeTicket(task))}</td>
+      <td class="nowrap">${task.created ? new Date(task.created).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }) : '—'}</td>
+    </tr>`).join('');
+
+  const generatedOn = now.toLocaleDateString('en-US', { weekday:'long', year:'numeric', month:'long', day:'numeric' });
+  const generatedShort = now.toLocaleDateString('en-US', { year:'numeric', month:'short', day:'numeric' });
+
+  // ── Full report HTML ──────────────────────────────────────
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>RBO IT Report — ${esc(period)}</title>
+<style>
+@page { size: Letter landscape; margin: 14mm 12mm; }
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Segoe UI', -apple-system, Arial, sans-serif; font-size: 8.5pt; color: #1a1a2e; background: #fff; line-height: 1.45; }
+
+/* HEADER */
+.rpt-hdr { background: #0a1628; color: #fff; padding: 14px 18px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; border-radius: 6px; }
+.rpt-brand { display: flex; align-items: center; gap: 12px; }
+.rpt-logo { width: 36px; height: 36px; background: #40BC86; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 11pt; font-weight: 800; color: #0a1628; flex-shrink: 0; }
+.rpt-name { font-size: 12pt; font-weight: 700; letter-spacing: -0.3px; }
+.rpt-sub  { font-size: 7pt; color: rgba(255,255,255,0.5); margin-top: 2px; }
+.rpt-right { text-align: right; }
+.rpt-title    { font-size: 14pt; font-weight: 700; letter-spacing: -0.4px; }
+.rpt-period   { font-size: 8.5pt; color: #40BC86; font-weight: 600; margin-top: 3px; }
+.rpt-gen      { font-size: 7pt; color: rgba(255,255,255,0.4); margin-top: 4px; }
+
+/* SECTION */
+.sec { font-size: 7pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: #40BC86; margin-bottom: 8px; padding-bottom: 5px; border-bottom: 1.5px solid #e9ecef; }
+
+/* KPI ROW */
+.kpi-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-bottom: 16px; break-inside: avoid; }
+.kpi { background: #f8f9fa; border: 1px solid #e9ecef; border-top: 3px solid #dee2e6; border-radius: 8px; padding: 11px 10px 9px; text-align: center; }
+.kpi.t{border-top-color:#58a6ff} .kpi.r{border-top-color:#f85149} .kpi.b{border-top-color:#1090e0}
+.kpi.o{border-top-color:#f0883e} .kpi.g{border-top-color:#3fb950} .kpi.p{border-top-color:#a5a0ff}
+.kpi-n { font-size: 22pt; font-weight: 700; line-height: 1; color: #0a1628; }
+.kpi-l { font-size: 6.5pt; text-transform: uppercase; letter-spacing: 0.07em; color: #6c757d; margin-top: 5px; }
+.kpi-s { font-size: 7pt; color: #adb5bd; margin-top: 3px; }
+
+/* BREAKDOWN */
+.bd-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px; break-inside: avoid; }
+.bd-card { background: #f8f9fa; border: 1px solid #e9ecef; border-radius: 8px; padding: 11px; }
+.bd-ttl  { font-size: 7pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: #6c757d; margin-bottom: 8px; }
+.bd-tbl  { width: 100%; border-collapse: collapse; }
+.bd-tbl td { padding: 3.5px 0; font-size: 8pt; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+.bd-tbl tr:last-child td { border-bottom: none; }
+.bd-label    { color: #495057; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bd-bar-cell { padding-left: 6px !important; width: 65px; }
+.bd-bar-wrap { background: #e9ecef; border-radius: 3px; height: 5px; }
+.bd-bar      { height: 5px; border-radius: 3px; background: #40BC86; }
+.bd-count    { text-align: right; font-weight: 600; color: #0a1628; padding-left: 4px; min-width: 18px; }
+.bd-pct      { text-align: right; color: #adb5bd; font-size: 7pt; padding-left: 4px; min-width: 30px; }
+.no-data     { color: #adb5bd; font-size: 7.5pt; padding: 8px 0 !important; }
+
+/* TICKET TABLE */
+.tkt-section { break-before: page; }
+.tkt-tbl { width: 100%; border-collapse: collapse; font-size: 7.5pt; }
+.tkt-tbl thead tr { background: #0a1628; color: #fff; }
+.tkt-tbl thead th { padding: 7px 8px; text-align: left; font-size: 6.5pt; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; white-space: nowrap; }
+.tkt-tbl tbody tr:nth-child(even) { background: #f8f9fa; }
+.tkt-tbl tbody td { padding: 5px 8px; border-bottom: 1px solid #e9ecef; vertical-align: top; }
+.n      { color: #adb5bd; font-size: 7pt; }
+.muted  { color: #adb5bd; font-style: italic; }
+.req    { max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nowrap { white-space: nowrap; }
+.cat    { color: #6c757d; font-size: 7pt; white-space: nowrap; }
+
+/* PILLS */
+.pill { display: inline-block; padding: 1.5px 7px; border-radius: 20px; font-size: 6.5pt; font-weight: 600; white-space: nowrap; }
+.s-todo     { background: #fde8e8; color: #c0392b; }
+.s-progress { background: #e3f0fb; color: #1565c0; }
+.s-review   { background: #fff3e0; color: #e65100; }
+.s-complete { background: #e8f5e9; color: #2e7d32; }
+.s-default  { background: #f0f0f0; color: #555; }
+.p-urgent   { background: #fde8e8; color: #c0392b; }
+.p-high     { background: #fef0e8; color: #d35400; }
+.p-normal   { background: #e3f0fb; color: #1565c0; }
+.p-low      { background: #f0f0f0; color: #666; }
+.p-none     { background: #f0f0f0; color: #aaa; }
+
+/* FOOTER */
+.rpt-ftr { margin-top: 14px; padding-top: 8px; border-top: 1px solid #e9ecef; display: flex; justify-content: space-between; font-size: 7pt; color: #adb5bd; }
+.rpt-ftr strong { color: #40BC86; }
+</style>
+</head>
+<body>
+
+<div class="rpt-hdr">
+  <div class="rpt-brand">
+    <div class="rpt-logo">RBO</div>
+    <div>
+      <div class="rpt-name">Recruiter Back Office</div>
+      <div class="rpt-sub">IT &amp; Data Space &mdash; Internal Operations</div>
+    </div>
+  </div>
+  <div class="rpt-right">
+    <div class="rpt-title">IT Ticket Report</div>
+    <div class="rpt-period">${esc(period)}</div>
+    <div class="rpt-gen">Generated on ${generatedOn}</div>
+  </div>
+</div>
+
+<div class="sec">Executive Summary</div>
+<div class="kpi-row">
+  <div class="kpi t"><div class="kpi-n">${total}</div><div class="kpi-l">Total Tickets</div></div>
+  <div class="kpi r"><div class="kpi-n">${todo}</div><div class="kpi-l">To Do</div><div class="kpi-s">${pct(todo)}% of total</div></div>
+  <div class="kpi b"><div class="kpi-n">${inProgress}</div><div class="kpi-l">In Progress</div><div class="kpi-s">${pct(inProgress)}% of total</div></div>
+  <div class="kpi o"><div class="kpi-n">${review}</div><div class="kpi-l">Awaiting Review</div><div class="kpi-s">${pct(review)}% of total</div></div>
+  <div class="kpi g"><div class="kpi-n">${completed}</div><div class="kpi-l">Completed</div><div class="kpi-s">${resRate}% resolution rate</div></div>
+  <div class="kpi p"><div class="kpi-n">${unassigned}</div><div class="kpi-l">Unassigned</div><div class="kpi-s">${pct(unassigned)}% of total</div></div>
+</div>
+
+<div class="sec">Breakdown</div>
+<div class="bd-row">
+  <div class="bd-card">
+    <div class="bd-ttl">By Status</div>
+    <table class="bd-tbl">${bdRows(statusRows, maxOf(statusRows))}</table>
+  </div>
+  <div class="bd-card">
+    <div class="bd-ttl">By Priority</div>
+    <table class="bd-tbl">${bdRows(prioRows, maxOf(prioRows), k => PRIORITY_META[k]?.label || k)}</table>
+  </div>
+  <div class="bd-card">
+    <div class="bd-ttl">Top Categories</div>
+    <table class="bd-tbl">${bdRows(catRows, maxOf(catRows))}</table>
+  </div>
+  <div class="bd-card">
+    <div class="bd-ttl">Top Requesters</div>
+    <table class="bd-tbl">${bdRows(reqRows, maxOf(reqRows))}</table>
+  </div>
+</div>
+
+<div class="tkt-section">
+  <div class="sec">Ticket Detail &mdash; ${total} ticket${total !== 1 ? 's' : ''}</div>
+  <table class="tkt-tbl">
+    <thead>
+      <tr>
+        <th>#</th><th>Status</th><th>Priority</th><th>Request</th>
+        <th>Requester</th><th>Assignee</th><th>Category</th><th>Created</th>
+      </tr>
+    </thead>
+    <tbody>${ticketRows}</tbody>
+  </table>
+</div>
+
+<div class="rpt-ftr">
+  <span><strong>RBO</strong> &mdash; Recruiter Back Office &middot; IT &amp; Data Space</span>
+  <span>Confidential &mdash; Internal Use Only</span>
+  <span>Generated ${generatedShort} &middot; RBO IT Dashboard</span>
+</div>
+
+<script>window.onload = () => setTimeout(() => window.print(), 250);<\/script>
+</body>
+</html>`;
+
+  const win = window.open('', '_blank');
+  if (!win) { alert('Please allow pop-ups for this site to export the PDF report.'); return; }
+  win.document.write(html);
+  win.document.close();
+}
 
 // ─── Export CSV ───────────────────────────────────────────
 function exportCSV() {
-  const headers = ['Status', 'Priority', 'Request', 'Requester', 'Assignees', 'Created', 'Due', 'Tags', 'Source', 'URL'];
-  const rows = state.filtered.map(t => [
-    t.status,
-    t.priority,
-    `"${(t.name      || '').replace(/"/g, '""')}"`,
-    `"${(t.requester || '').replace(/"/g, '""')}"`,
-    `"${(t.assignees || []).map(a => a.name).join(', ').replace(/"/g, '""')}"`,
-    t.created ? new Date(t.created).toLocaleDateString('en-US') : '',
-    t.due     ? new Date(t.due).toLocaleDateString('en-US')     : '',
-    `"${(t.tags || []).join(', ')}"`,
-    t.source || '',
-    t.url    || ''
-  ]);
+  const { t, now, period, total, todo, inProgress, review, completed, unassigned, resRate, pct,
+          hasTags, statusRows, prioRows, catRows, reqRows } = _reportMeta();
 
-  const csv  = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const q    = s => `"${String(s || '').replace(/"/g, '""')}"`;
+  const fmtD = ts => ts ? new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+
+  const lines = [
+    [q('RBO — IT Ticket Report')],
+    [],
+    ['Report Period:', q(period)],
+    ['Generated:',    q(now.toLocaleDateString('en-US', { weekday:'long', year:'numeric', month:'long', day:'numeric' }))],
+    [],
+    ['EXECUTIVE SUMMARY'],
+    ['Metric',          'Count', 'Share of Total'],
+    ['Total Tickets',   total,   '100%'],
+    ['To Do',           todo,        `${pct(todo)}%`],
+    ['In Progress',     inProgress,  `${pct(inProgress)}%`],
+    ['Awaiting Review', review,      `${pct(review)}%`],
+    ['Completed',       completed,   `${pct(completed)}%`],
+    ['Unassigned',      unassigned,  `${pct(unassigned)}%`],
+    ['Resolution Rate', `${resRate}%`, ''],
+    [],
+    ['STATUS BREAKDOWN'],
+    ['Status', 'Count', 'Share'],
+    ...statusRows.map(([s, n]) => [q(s), n, `${pct(n)}%`]),
+    [],
+    ['PRIORITY BREAKDOWN'],
+    ['Priority', 'Count', 'Share'],
+    ...prioRows.map(([p, n]) => [q(PRIORITY_META[p]?.label || p), n, `${pct(n)}%`]),
+    [],
+    ['TOP CATEGORIES'],
+    ['Category', 'Count', 'Share'],
+    ...(catRows.length ? catRows.map(([c, n]) => [q(c), n, `${pct(n)}%`]) : [['No category data', '', '']]),
+    [],
+    ['TOP REQUESTERS'],
+    ['Requester', 'Count', 'Share'],
+    ...(reqRows.length ? reqRows.map(([r, n]) => [q(r), n, `${pct(n)}%`]) : [['No data', '', '']]),
+    [],
+    [],
+    ['TICKET DETAIL'],
+    ['#', 'Status', 'Priority', 'Request', 'Requester', 'Assignees', 'Category', 'Created', 'Due', 'Source', 'URL'],
+    ...t.map((task, i) => [
+      i + 1,
+      q(task.status),
+      q(task.priority),
+      q(task.name),
+      q(task.requester),
+      q((task.assignees || []).map(a => a.name).join(', ')),
+      q(hasTags ? (task.tags?.[0] || '') : categorizeTicket(task)),
+      q(fmtD(task.created)),
+      q(fmtD(task.due)),
+      q(task.source || ''),
+      q(task.url    || '')
+    ])
+  ];
+
+  const csv  = lines.map(row => row.join(',')).join('\n');
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' }); // BOM for Excel
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement('a');
   a.href     = url;
-  a.download = `rbo-tickets-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.download = `rbo-it-report-${now.toISOString().slice(0, 10)}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }
