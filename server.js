@@ -24,12 +24,19 @@ const LIST_FORM = '901407592487';
 const LIST_V2   = '901407592075';
 
 // --- Cache & SSE state ---
-let _cache     = null;
-let _cacheTime = 0;
-let _clients   = [];           // active SSE connections
+let _cache       = null;
+let _cacheTime   = 0;
+let _clients     = [];           // active SSE connections
+let _fingerprint = '';           // last-seen data snapshot — broadcast only on change
 
 const CACHE_TTL     = 60 * 1_000;   // 1 min cache for manual requests
-const POLL_INTERVAL = 30 * 1_000;   // push updates every 30 s
+const POLL_INTERVAL = 60 * 1_000;   // check for changes every 60 s
+
+// Fingerprint = concatenation of id:status:updated for every task.
+// Changes whenever a ticket is added, removed, or its status/content is updated.
+function makeFingerprint(tasks) {
+  return tasks.map(t => `${t.id}:${t.status}:${t.updated || 0}`).join('|');
+}
 
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -141,12 +148,16 @@ function broadcast(data) {
   });
 }
 
-// Poll ClickUp every POLL_INTERVAL and broadcast to clients
+// Poll ClickUp every POLL_INTERVAL; broadcast ONLY when something changed
 function startBackgroundPolling() {
   setInterval(async () => {
     try {
       const data = await fetchAndCacheTickets(true);
-      broadcast(data);
+      const fp   = makeFingerprint(data.tasks);
+      if (fp !== _fingerprint) {
+        _fingerprint = fp;
+        broadcast(data);
+      }
     } catch (e) {
       console.error('Background poll error:', e.message);
     }
@@ -196,7 +207,10 @@ app.get('*', (req, res) => {
 app.listen(PORT, async () => {
   console.log(`\n  RBO IT Ticket Dashboard`);
   console.log(`  ► http://localhost:${PORT}\n`);
-  // Pre-warm cache before accepting SSE clients
-  try { await fetchAndCacheTickets(true); } catch (e) { console.error('Initial fetch error:', e.message); }
+  // Pre-warm cache and set initial fingerprint before accepting SSE clients
+  try {
+    const init = await fetchAndCacheTickets(true);
+    _fingerprint = makeFingerprint(init.tasks);
+  } catch (e) { console.error('Initial fetch error:', e.message); }
   startBackgroundPolling();
 });

@@ -809,9 +809,34 @@ body { font-family: 'Segoe UI', -apple-system, Arial, sans-serif; font-size: 8.5
 /* FOOTER */
 .rpt-ftr { margin-top: 14px; padding-top: 8px; border-top: 1px solid #e9ecef; display: flex; justify-content: space-between; font-size: 7pt; color: #adb5bd; }
 .rpt-ftr strong { color: #40BC86; }
+
+/* TOOLBAR (not captured in PDF) */
+#rpt-toolbar { position: sticky; top: 0; z-index: 999; background: #0a1628; padding: 10px 18px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 8px rgba(0,0,0,0.35); margin-bottom: 0; }
+.tb-label { color: #40BC86; font-weight: 700; font-size: 9pt; letter-spacing: -0.2px; }
+.tb-hint  { color: rgba(255,255,255,0.35); font-size: 7.5pt; margin-left: 10px; }
+.tb-actions { display: flex; gap: 8px; }
+.tb-btn-save { background: #40BC86; color: #0a1628; border: none; padding: 8px 20px; border-radius: 6px; font-weight: 700; font-size: 9pt; cursor: pointer; }
+.tb-btn-save:hover:not(:disabled) { background: #36a875; }
+.tb-btn-save:disabled { opacity: 0.55; cursor: not-allowed; }
+.tb-btn-close { background: transparent; color: rgba(255,255,255,0.5); border: 1px solid rgba(255,255,255,0.2); padding: 8px 14px; border-radius: 6px; font-size: 9pt; cursor: pointer; }
+.tb-btn-close:hover { color: #fff; border-color: rgba(255,255,255,0.5); }
+#report-body { background: #fff; }
 </style>
 </head>
 <body>
+
+<div id="rpt-toolbar">
+  <div>
+    <span class="tb-label">RBO IT Report</span>
+    <span class="tb-hint">${esc(period)}</span>
+  </div>
+  <div class="tb-actions">
+    <button class="tb-btn-save" id="btn-save" onclick="savePDF()">&#8595; Save PDF</button>
+    <button class="tb-btn-close" onclick="window.close()">Close</button>
+  </div>
+</div>
+
+<div id="report-body">
 
 <div class="rpt-hdr">
   <div class="rpt-brand">
@@ -877,11 +902,59 @@ body { font-family: 'Segoe UI', -apple-system, Arial, sans-serif; font-size: 8.5
   <span>Generated ${generatedShort} &middot; RBO IT Dashboard</span>
 </div>
 
-<script>window.onload = () => setTimeout(() => window.print(), 250);<\/script>
+</div><!-- #report-body -->
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"><\/script>
+<script>
+var PDF_FILENAME = 'rbo-it-report-${now.toISOString().slice(0, 10)}.pdf';
+var PDF_OPT = {
+  margin:      [14, 12, 14, 12],
+  filename:    PDF_FILENAME,
+  image:       { type: 'jpeg', quality: 0.98 },
+  html2canvas: { scale: 2, useCORS: true, logging: false, backgroundColor: '#ffffff' },
+  jsPDF:       { unit: 'mm', format: 'letter', orientation: 'landscape' },
+  pagebreak:   { before: '.tkt-section', mode: ['avoid-all'] }
+};
+
+function fallbackDownload(blob) {
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url; a.download = PDF_FILENAME;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+async function savePDF() {
+  var btn = document.getElementById('btn-save');
+  btn.textContent = 'Generating…';
+  btn.disabled = true;
+  try {
+    var blob = await html2pdf().set(PDF_OPT).from(document.getElementById('report-body')).toPdf().output('blob');
+    if (window.showSaveFilePicker) {
+      try {
+        var handle = await window.showSaveFilePicker({
+          suggestedName: PDF_FILENAME,
+          types: [{ description: 'PDF Document', accept: { 'application/pdf': ['.pdf'] } }]
+        });
+        var w = await handle.createWritable();
+        await w.write(blob);
+        await w.close();
+      } catch (e) {
+        if (e.name !== 'AbortError') fallbackDownload(blob);
+      }
+    } else {
+      fallbackDownload(blob);
+    }
+  } catch (e) { console.error('PDF error:', e); }
+  btn.textContent = '↓ Save PDF';
+  btn.disabled = false;
+}
+<\/script>
 </body>
 </html>`;
 
-  const win = window.open('', '_blank');
+  const win = window.open('', '_blank', 'width=1200,height=860,scrollbars=yes,resizable=yes');
   if (!win) { alert('Please allow pop-ups for this site to export the PDF report.'); return; }
   win.document.write(html);
   win.document.close();
